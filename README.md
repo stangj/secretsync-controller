@@ -289,7 +289,7 @@ metadata:
 
  kubectl delele -f sync-dest1.yaml 就不会在同步了 但是目的名称空间的Secret并没有删除
 ```
-## 新增加 目前名称空间功能
+## 新增加 目的名称空间功能
 ```bash
 apiVersion: sync.stangj.com/v1
 kind: Secretsync
