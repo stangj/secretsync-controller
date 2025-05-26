@@ -189,11 +189,11 @@ metadata:
 # kubectl create ns dest1-sync
 # kubectl create ns dest2-sync
 创建yaml指定同步的名称空间
-# vim sync-dest1.yaml
+# vim sync-tls.yaml
 apiVersion: sync.stangj.com/v1
 kind: Secretsync
 metadata:
-  name: sync-dest1
+  name: sync-tls
 spec:
   sourceNamespace: cert-sync
   sourceSecretName: tls
@@ -288,4 +288,25 @@ metadata:
 到这里通过标签的方法已经实现了
 
  kubectl delele -f sync-dest1.yaml 就不会在同步了 但是目的名称空间的Secret并没有删除
+```
+## 新增加 目前名称空间功能
+```bash
+apiVersion: sync.stangj.com/v1
+kind: Secretsync
+metadata:
+  name: sync-tls
+  namespace: cert-sync
+spec:
+  sourceNamespace: cert-sync
+  sourceSecretName: tls
+  targetNamespaces:
+    - dest2-sync
+    - dest1-sync
+  targetNamespaceSelector:
+    matchLabels:
+      secret-sync: "enabled"
+
+查看同步状态
+# kubectl get secretsync -n cert-sync sync-dest1 -o jsonpath='{.status}' ;echo 
+{"lastSyncTime":"2025-05-26T13:35:07Z","syncedNamespaces":["dest2-sync","dest1-sync"]}
 ```
