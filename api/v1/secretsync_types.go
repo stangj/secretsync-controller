@@ -33,6 +33,8 @@ type SecretsyncSpec struct {
 	TargetNamespaceSelector *metav1.LabelSelector `json:"targetNamespaceSelector,omitempty"`
 	// 目标 Secret 名称（可选，默认与源同名）
 	TargetSecretName string `json:"targetSecretName,omitempty"`
+	// 显式指定的目标命名空间列表
+	TargetNamespaces []string `json:"targetNamespaces,omitempty"`
 }
 
 // SecretsyncStatus defines the observed state of Secretsync.

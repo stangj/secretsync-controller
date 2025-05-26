@@ -132,8 +132,12 @@ func (r *SecretsyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 
-	// 根据标签选择器获取匹配的目标命名空间列表
-	namespaces, err := r.getMatchingNamespaces(ctx, syncObj.Spec.TargetNamespaceSelector)
+	// 更新为同时使用标签选择器和显式指定的命名空间列表
+	namespaces, err := r.getMatchingNamespaces(
+		ctx,
+		syncObj.Spec.TargetNamespaceSelector,
+		syncObj.Spec.TargetNamespaces, // 新增：传入显式指定的命名空间列表
+	)
 	if err != nil {
 		log.Error(err, "Failed to list matched namespaces")
 		syncTotalCounter.WithLabelValues("failure").Inc()
@@ -251,20 +255,35 @@ func (r *SecretsyncReconciler) syncSecret(
 	return nil
 }
 
-// getMatchingNamespaces 根据标签选择器获取匹配的命名空间列表
+// getMatchingNamespaces 根据标签选择器和显式指定的命名空间列表获取匹配的命名空间
 // 参数:
 // - ctx: 上下文，用于API通信
 // - selector: Kubernetes 标签选择器
+// - explicitNamespaces: 显式指定的命名空间列表
 // 返回:
-// - 匹配的命名空间名称列表
+// - 匹配的命名空间名称列表（合并所有来源的命名空间并去重）
 // - 错误（如果有）
 func (r *SecretsyncReconciler) getMatchingNamespaces(
 	ctx context.Context,
 	selector *metav1.LabelSelector,
+	explicitNamespaces []string,
 ) ([]string, error) {
-	// 如果没有提供选择器，返回空列表
+	// 用于存储最终结果的映射，便于去重
+	result := make(map[string]struct{})
+
+	// 首先添加所有显式指定的命名空间
+	for _, ns := range explicitNamespaces {
+		result[ns] = struct{}{}
+	}
+
+	// 如果没有提供选择器，直接返回显式指定的命名空间
 	if selector == nil {
-		return nil, nil
+		// 将映射转为字符串数组
+		var namespaces []string
+		for ns := range result {
+			namespaces = append(namespaces, ns)
+		}
+		return namespaces, nil
 	}
 
 	// 将 LabelSelector 转换为 Selector 接口
@@ -279,10 +298,15 @@ func (r *SecretsyncReconciler) getMatchingNamespaces(
 		return nil, err
 	}
 
-	// 提取命名空间名称
-	var namespaces []string
+	// 将通过标签选择器找到的命名空间添加到结果中
 	for _, ns := range nsList.Items {
-		namespaces = append(namespaces, ns.Name)
+		result[ns.Name] = struct{}{}
+	}
+
+	// 将映射转为字符串数组
+	var namespaces []string
+	for ns := range result {
+		namespaces = append(namespaces, ns)
 	}
 	return namespaces, nil
 }
@@ -317,7 +341,6 @@ func (r *SecretsyncReconciler) enqueueSecrets(_ context.Context, obj client.Obje
 
 // enqueueNamespaces 是一个 MapFunc，当监视的 Namespace 发生变化时
 // 确定哪些 Secretsync 对象需要被重新调和
-// 返回需要重新调和的 Secretsync 请求列表
 func (r *SecretsyncReconciler) enqueueNamespaces(_ context.Context, obj client.Object) []reconcile.Request {
 	ctx := context.TODO()
 	// 转换为 Namespace 对象
@@ -333,18 +356,29 @@ func (r *SecretsyncReconciler) enqueueNamespaces(_ context.Context, obj client.O
 	// 查找所有可能使用此命名空间作为目标的 Secretsync 对象
 	var requests []reconcile.Request
 	for _, item := range list.Items {
-		// 跳过没有目标命名空间选择器的 Secretsync
-		if item.Spec.TargetNamespaceSelector == nil {
-			continue
+		// 检查是否在显式指定的命名空间列表中
+		for _, targetNs := range item.Spec.TargetNamespaces {
+			if targetNs == ns.Name {
+				requests = append(requests, reconcile.Request{
+					NamespacedName: client.ObjectKeyFromObject(&item),
+				})
+				// 已找到匹配，跳出内层循环
+				goto nextItem
+			}
 		}
 
 		// 检查命名空间是否匹配选择器
-		sel, _ := metav1.LabelSelectorAsSelector(item.Spec.TargetNamespaceSelector)
-		if sel.Matches(labels.Set(ns.Labels)) {
-			requests = append(requests, reconcile.Request{
-				NamespacedName: client.ObjectKeyFromObject(&item),
-			})
+		if item.Spec.TargetNamespaceSelector != nil {
+			sel, _ := metav1.LabelSelectorAsSelector(item.Spec.TargetNamespaceSelector)
+			if sel.Matches(labels.Set(ns.Labels)) {
+				requests = append(requests, reconcile.Request{
+					NamespacedName: client.ObjectKeyFromObject(&item),
+				})
+			}
 		}
+
+	nextItem:
+		continue
 	}
 	return requests
 }
