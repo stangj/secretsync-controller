@@ -200,7 +200,8 @@ func (r *SecretsyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	// 所有同步都成功，返回成功结果
-	return ctrl.Result{}, nil
+	// 默认每 2 分钟执行一次 Reconcile
+	return ctrl.Result{RequeueAfter: 2 * time.Minute}, nil
 }
 
 // syncSecret 将单个源 Secret 同步到目标命名空间中
