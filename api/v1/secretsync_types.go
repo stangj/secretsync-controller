@@ -35,6 +35,8 @@ type SecretsyncSpec struct {
 	TargetSecretName string `json:"targetSecretName,omitempty"`
 	// 显式指定的目标命名空间列表
 	TargetNamespaces []string `json:"targetNamespaces,omitempty"`
+	// 同步检查间隔时间（单位：秒），默认为 180 秒
+	SyncInterval int `json:"syncInterval,omitempty"`
 }
 
 // SecretsyncStatus defines the observed state of Secretsync.

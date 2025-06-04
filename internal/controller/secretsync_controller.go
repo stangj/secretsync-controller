@@ -155,14 +155,46 @@ func (r *SecretsyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	var synced []string // 成功同步的命名空间
 	var failed []string // 失败的命名空间
 
-	// 遍历所有目标命名空间，执行同步
+	// 检查目标 Secret 是否已变更或删除
 	for _, ns := range namespaces {
-		if err := r.syncSecret(ctx, &srcSecret, ns, targetSecretName, &syncObj); err != nil {
-			// 同步到当前命名空间失败，记录错误
-			log.Error(err, "Failed to sync secret to namespace", "namespace", ns)
-			failed = append(failed, ns)
+		needSync := false
+
+		// 检查目标 Secret 是否存在
+		var targetSecret corev1.Secret
+		targetKey := types.NamespacedName{Namespace: ns, Name: targetSecretName}
+		err := r.Get(ctx, targetKey, &targetSecret)
+
+		if err != nil {
+			if errors.IsNotFound(err) {
+				// 目标 Secret 不存在，需要同步
+				log.Info("Target Secret not found, will sync", "namespace", ns, "name", targetSecretName)
+				needSync = true
+			} else {
+				// 获取目标 Secret 出错
+				log.Error(err, "Failed to get target Secret", "namespace", ns, "name", targetSecretName)
+				failed = append(failed, ns)
+				continue
+			}
 		} else {
-			// 同步成功，记录成功的命名空间
+			// 目标 Secret 存在，检查数据是否一致
+			if !reflect.DeepEqual(targetSecret.Data, srcSecret.Data) || targetSecret.Type != srcSecret.Type {
+				log.Info("Target Secret data or type changed, will sync", "namespace", ns, "name", targetSecretName)
+				needSync = true
+			}
+		}
+
+		// 如果需要同步，执行同步操作
+		if needSync {
+			if err := r.syncSecret(ctx, &srcSecret, ns, targetSecretName, &syncObj); err != nil {
+				// 同步到当前命名空间失败，记录错误
+				log.Error(err, "Failed to sync secret to namespace", "namespace", ns)
+				failed = append(failed, ns)
+			} else {
+				// 同步成功，记录成功的命名空间
+				synced = append(synced, ns)
+			}
+		} else {
+			// 不需要同步，记录为成功
 			synced = append(synced, ns)
 		}
 	}
@@ -194,14 +226,21 @@ func (r *SecretsyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	latency := time.Since(start).Seconds()
 	syncLatencySeconds.Observe(latency)
 
-	// 如果有任何命名空间同步失败，返回错误以触发重新排队
-	if len(failed) > 0 {
-		return ctrl.Result{}, fmt.Errorf("some target namespaces failed to sync")
+	// 确定下次调和的间隔时间
+	// 使用用户指定的 SyncInterval 或默认值 180 秒
+	syncInterval := 180
+	if syncObj.Spec.SyncInterval > 0 {
+		syncInterval = syncObj.Spec.SyncInterval
 	}
 
-	// 所有同步都成功，返回成功结果
-	// 默认每 2 分钟执行一次 Reconcile
-	return ctrl.Result{RequeueAfter: 2 * time.Minute}, nil
+	// 如果有任何命名空间同步失败，返回错误以触发重新排队
+	if len(failed) > 0 {
+		// 即使有失败，也按照指定间隔进行下一次调和
+		return ctrl.Result{RequeueAfter: time.Duration(syncInterval) * time.Second}, fmt.Errorf("some target namespaces failed to sync")
+	}
+
+	// 所有同步都成功，按照指定间隔进行下一次调和
+	return ctrl.Result{RequeueAfter: time.Duration(syncInterval) * time.Second}, nil
 }
 
 // syncSecret 将单个源 Secret 同步到目标命名空间中
@@ -222,6 +261,11 @@ func (r *SecretsyncReconciler) syncSecret(
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      targetSecretName,
 			Namespace: namespace,
+			Labels: map[string]string{
+				"secretsync.example.com/managed-by":       "secretsync-controller",
+				"secretsync.example.com/source-namespace": src.Namespace,
+				"secretsync.example.com/source-name":      src.Name,
+			},
 		},
 		Data: src.Data, // 复制源 Secret 的数据
 		Type: src.Type, // 复制源 Secret 的类型
@@ -239,6 +283,7 @@ func (r *SecretsyncReconciler) syncSecret(
 	if err != nil {
 		if errors.IsNotFound(err) {
 			// Secret 不存在，创建新的
+			r.Log.Info("Creating new Secret", "namespace", namespace, "name", targetSecretName)
 			return r.Create(ctx, target)
 		}
 		return err
@@ -247,12 +292,23 @@ func (r *SecretsyncReconciler) syncSecret(
 	// Secret 已存在，检查是否需要更新
 	// 只有当数据或类型发生变化时才更新
 	if !reflect.DeepEqual(existing.Data, target.Data) || existing.Type != target.Type {
+		r.Log.Info("Updating existing Secret", "namespace", namespace, "name", targetSecretName)
 		existing.Data = target.Data
 		existing.Type = target.Type
+
+		// 确保标签被正确设置
+		if existing.Labels == nil {
+			existing.Labels = make(map[string]string)
+		}
+		existing.Labels["secretsync.example.com/managed-by"] = "secretsync-controller"
+		existing.Labels["secretsync.example.com/source-namespace"] = src.Namespace
+		existing.Labels["secretsync.example.com/source-name"] = src.Name
+
 		return r.Update(ctx, &existing)
 	}
 
 	// 数据和类型没有变化，无需更新
+	r.Log.Info("Secret is up to date", "namespace", namespace, "name", targetSecretName)
 	return nil
 }
 
