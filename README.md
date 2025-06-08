@@ -305,6 +305,7 @@ spec:
   targetNamespaceSelector:
     matchLabels:
       secret-sync: "enabled"
+  syncInterval: 60
 
 查看同步状态
 # kubectl get secretsync -n cert-sync sync-dest1 -o jsonpath='{.status}' ;echo 
